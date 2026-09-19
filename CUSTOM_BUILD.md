@@ -7,7 +7,7 @@ CONFIG_DRM_AMDGPU=m
 CONFIG_DRM_AMDGPU_CIK=y
 ```
 
-The `Weekly AMDGPU CIK build` workflow checks every day at 03:41 UTC and can
+The `Daily stable AMDGPU CIK build` workflow checks every day at 03:41 UTC and can
 also be started manually. It keeps the fork's maintenance branch synchronized
 with upstream and resolves Home Assistant OS's latest non-prerelease release.
 If that upstream stable release is already present in `weekly-latest`, the run
@@ -18,8 +18,8 @@ stops without compiling. Otherwise it checks out the stable tag directly from
 persistent private RAUC identity, and updates the rolling release. A manual run
 can set `force_rebuild` when the same upstream version must be rebuilt.
 
-After a successful release the workflow publishes a Supervisor-compatible
-manifest at:
+After a successful release the workflow publishes a manifest modeled after the
+official stable manifest at:
 
 - `https://gpillon.github.io/haos-amdgpu-cik/stable.json`
 
@@ -27,6 +27,18 @@ The manifest is never advanced before the signed RAUC bundle and its checksums
 are available. The post-install updater consumes the `custom_haos` metadata and
 invokes the host RAUC service; the official Supervisor update endpoint remains
 unchanged.
+
+## Post-install updates
+
+Add this repository to the Home Assistant app store after the first custom
+image has booted, then install **HAOS AMDGPU CIK Updater**. Its ingress panel
+checks the Pages manifest and can pass the signed bundle URL directly to the
+host RAUC service. Automatic installation and automatic reboot are disabled by
+default.
+
+The updater cannot bootstrap an official HAOS installation because the
+official image does not yet trust the custom certificate. The first transition
+still requires the custom `.img.xz` image and a Home Assistant backup restore.
 
 Stable download URLs:
 
