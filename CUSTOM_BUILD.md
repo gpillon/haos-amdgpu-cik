@@ -8,10 +8,12 @@ CONFIG_DRM_AMDGPU_CIK=y
 ```
 
 The `Weekly AMDGPU CIK build` workflow runs every Monday at 03:41 UTC and can
-also be started manually. It synchronizes the fork with the upstream `dev`
-branch, reapplies the CIK kernel patch to that updated source, builds only
-`generic-x86-64`, verifies the final Linux `.config`, signs the image with a
-persistent private RAUC identity, and updates the rolling `weekly-latest`
+also be started manually. It keeps the fork's maintenance branch synchronized
+with upstream, resolves Home Assistant OS's latest non-prerelease release,
+checks out that stable tag directly from `home-assistant/operating-system`, and
+applies only `CONFIG_DRM_AMDGPU_CIK=y` in the runner workspace. It then builds
+only `generic-x86-64`, verifies the final Linux `.config`, signs the image with
+a persistent private RAUC identity, and updates the rolling `weekly-latest`
 GitHub release.
 
 Stable download URLs:
@@ -37,6 +39,7 @@ initial image and retain a recoverable backup before relying on it.
 
 ## Maintenance
 
-If the upstream merge conflicts with the custom kernel fragment, the weekly job
-stops before building. Resolve the conflict without dropping
-`CONFIG_DRM_AMDGPU_CIK=y`, then rerun the workflow.
+The kernel configuration is not committed to the fork. Each run starts from the
+latest stable upstream tag and reapplies only the CIK setting. If upstream
+removes or renames the AMDGPU configuration anchor, the workflow stops before
+building instead of changing unrelated kernel options.
