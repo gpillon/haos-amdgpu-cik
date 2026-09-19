@@ -1,0 +1,249 @@
+name: Weekly AMDGPU CIK build
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday at 03:41 UTC. Avoid the top of the hour, when scheduled runs are busier.
+    - cron: "41 3 * * 1"
+
+permissions: {}
+
+concurrency:
+  group: weekly-amdgpu-cik
+  cancel-in-progress: false
+
+env:
+  BOARD: generic-x86-64
+  DEFCONFIG: generic_x86_64
+
+jobs:
+  sync:
+    name: Sync the fork with Home Assistant OS
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Merge upstream dev into this fork
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/merge-upstream" \
+            -f branch=dev
+
+  prepare:
+    name: Prepare the HAOS builder
+    needs: sync
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      builder_image: ${{ steps.builder.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout the synchronized source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Generate a unique HAOS version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          source buildroot-external/meta
+          suffix="dev$(date --utc +'%Y%m%d%H%M%S')"
+          version="${VERSION_MAJOR}.${VERSION_MINOR}.${suffix}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to the GitHub container registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and cache the HAOS builder
+        id: build_builder
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile
+          tags: ghcr.io/${{ github.repository_owner }}/haos-builder-amdgpu-cik
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/haos-builder-amdgpu-cik:cache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/haos-builder-amdgpu-cik:cache,mode=max
+          push: true
+
+      - name: Export builder image reference
+        id: builder
+        shell: bash
+        run: |
+          echo "image=ghcr.io/${{ github.repository_owner }}/haos-builder-amdgpu-cik@${{ steps.build_builder.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and publish generic-x86-64
+    needs: prepare
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - name: Checkout the synchronized source and submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+          submodules: true
+          persist-credentials: false
+
+      - name: Verify the custom kernel fragment
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fxq 'CONFIG_DRM_AMDGPU=m' buildroot-external/board/pc/generic-x86-64/kernel.config
+          grep -Fxq 'CONFIG_DRM_AMDGPU_CIK=y' buildroot-external/board/pc/generic-x86-64/kernel.config
+
+      - name: Set build version and stable Supervisor channel
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          suffix="${VERSION#*.*.}"
+          sed -i -E "s/(^VERSION_SUFFIX=\").*(\"$)/\1${suffix}\2/" buildroot-external/meta
+
+      - name: Install the persistent RAUC signing identity
+        shell: bash
+        env:
+          RAUC_CERTIFICATE_PEM: ${{ secrets.RAUC_CERTIFICATE_PEM }}
+          RAUC_PRIVATE_KEY_PEM: ${{ secrets.RAUC_PRIVATE_KEY_PEM }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RAUC_CERTIFICATE_PEM}" || -z "${RAUC_PRIVATE_KEY_PEM}" ]]; then
+            echo "::error::RAUC signing secrets are missing"
+            exit 1
+          fi
+          printf '%s\n' "${RAUC_CERTIFICATE_PEM}" > cert.pem
+          printf '%s\n' "${RAUC_PRIVATE_KEY_PEM}" > key.pem
+          chmod 600 key.pem
+          openssl x509 -in cert.pem -noout -checkend 77760000
+          cert_public_key="$({ openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform DER; } | sha256sum)"
+          private_public_key="$({ openssl pkey -in key.pem -pubout -outform DER; } | sha256sum)"
+          test "${cert_public_key%% *}" = "${private_public_key%% *}"
+
+      - name: Free space on the GitHub runner
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android/sdk/ndk
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo mkdir /mnt/cache
+          sudo mkdir /mnt/output
+          workspace_owner="$(stat -c '%U:%G' "${GITHUB_WORKSPACE}")"
+          sudo ln -sfn /mnt/output "${GITHUB_WORKSPACE}/output"
+          sudo chown -R "${workspace_owner}" /mnt/cache /mnt/output
+          df -h
+
+      - name: Restore compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /mnt/cache/cc
+          key: haos-cc-${{ env.BOARD }}-${{ github.run_id }}
+          restore-keys: |
+            haos-cc-${{ env.BOARD }}-
+
+      - name: Generate Buildroot configuration
+        uses: ./.github/actions/haos-builder-command
+        with:
+          image: ${{ needs.prepare.outputs.builder_image }}
+          command: make ${{ env.DEFCONFIG }}_defconfig
+
+      - name: Select stable Home Assistant components
+        uses: ./.github/actions/haos-builder-command
+        with:
+          image: ${{ needs.prepare.outputs.builder_image }}
+          command: bash -c 'echo "BR2_PACKAGE_HASSIO_CHANNEL_STABLE=y" >> /build/output/.config && make olddefconfig'
+
+      - name: Build HAOS
+        uses: ./.github/actions/haos-builder-command
+        with:
+          image: ${{ needs.prepare.outputs.builder_image }}
+          command: make
+
+      - name: Verify the generated kernel configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          config_file="$(find output/build -path '*/linux-*/.config' -print -quit)"
+          test -n "${config_file}"
+          grep -Fxq 'CONFIG_DRM_AMDGPU=m' "${config_file}"
+          grep -Fxq 'CONFIG_DRM_AMDGPU_CIK=y' "${config_file}"
+
+      - name: Check Linux configuration fragments
+        uses: ./.github/actions/haos-builder-command
+        with:
+          image: ${{ needs.prepare.outputs.builder_image }}
+          command: make BR2_CHECK_DOTCONFIG_OPTS="--github-format --strip-path-prefix=/build/" linux-check-dotconfig
+
+      - name: Save compiler cache
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /mnt/cache/cc
+          key: haos-cc-${{ env.BOARD }}-${{ github.run_id }}
+
+      - name: Prepare stable release filenames
+        id: release_files
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir release
+          cp "output/images/haos_${BOARD}-${VERSION}.raucb" release/haos_generic-x86-64-amdgpu-cik.raucb
+          cp "output/images/haos_${BOARD}-${VERSION}.img.xz" release/haos_generic-x86-64-amdgpu-cik.img.xz
+          printf '%s\n' "${VERSION}" > release/VERSION
+          (cd release && sha256sum haos_generic-x86-64-amdgpu-cik.raucb haos_generic-x86-64-amdgpu-cik.img.xz > SHA256SUMS)
+
+      - name: Upload short-lived workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          archive: false
+          name: haos-${{ env.BOARD }}-${{ needs.prepare.outputs.version }}-amdgpu-cik
+          path: release/
+          retention-days: 14
+
+      - name: Publish or refresh the rolling release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="HAOS ${VERSION} with AMDGPU CIK"
+          notes="Automated generic-x86-64 build from Home Assistant OS dev with CONFIG_DRM_AMDGPU_CIK=y. Internal HAOS version: ${VERSION}."
+          if gh release view weekly-latest >/dev/null 2>&1; then
+            gh release upload weekly-latest release/* --clobber
+            gh release edit weekly-latest --title "${title}" --notes "${notes}" --latest
+          else
+            gh release create weekly-latest release/* \
+              --target "$(git rev-parse HEAD)" \
+              --title "${title}" \
+              --notes "${notes}" \
+              --latest
+          fi
+
+      - name: Build summary
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          echo "### HAOS AMDGPU CIK build" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Kernel: \`CONFIG_DRM_AMDGPU_CIK=y\` verified in the generated .config" >> "$GITHUB_STEP_SUMMARY"
+          echo "- RAUC: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/haos_generic-x86-64-amdgpu-cik.raucb" >> "$GITHUB_STEP_SUMMARY"
+
