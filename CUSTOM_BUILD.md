@@ -1,0 +1,42 @@
+# Home Assistant OS with AMDGPU CIK
+
+This fork produces an unofficial `generic-x86-64` Home Assistant OS image with:
+
+```text
+CONFIG_DRM_AMDGPU=m
+CONFIG_DRM_AMDGPU_CIK=y
+```
+
+The `Weekly AMDGPU CIK build` workflow runs every Monday at 03:41 UTC and can
+also be started manually. It synchronizes the fork with the upstream `dev`
+branch, builds only `generic-x86-64`, verifies the final Linux `.config`, signs
+the image with a persistent private RAUC identity, and updates the rolling
+`weekly-latest` GitHub release.
+
+Stable download URLs:
+
+- `https://github.com/gpillon/haos-amdgpu-cik/releases/latest/download/haos_generic-x86-64-amdgpu-cik.raucb`
+- `https://github.com/gpillon/haos-amdgpu-cik/releases/latest/download/haos_generic-x86-64-amdgpu-cik.img.xz`
+- `https://github.com/gpillon/haos-amdgpu-cik/releases/latest/download/SHA256SUMS`
+
+The `.img.xz` image is required for the first installation because it embeds
+the public half of the custom RAUC signing identity. Later `.raucb` updates must
+be signed by the same private key.
+
+## Security and compatibility
+
+The private key is stored as the `RAUC_PRIVATE_KEY_PEM` GitHub Actions secret.
+Do not commit or publish it. Keep the local backup in `rauc-signing/key.pem`
+secure: losing both the backup and the GitHub secret means future compatible
+updates can no longer be signed.
+
+This is not an official Home Assistant build. Home Assistant OS previously
+disabled AMDGPU SI/CIK support after boot crashes on some AMD systems. Test the
+initial image and retain a recoverable backup before relying on it.
+
+## Maintenance
+
+If the upstream merge conflicts with the custom kernel fragment, the weekly job
+stops before building. Resolve the conflict without dropping
+`CONFIG_DRM_AMDGPU_CIK=y`, then rerun the workflow.
+
