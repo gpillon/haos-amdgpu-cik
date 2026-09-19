@@ -2,9 +2,15 @@ name: Weekly AMDGPU CIK build
 
 on:
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: Rebuild even when the latest stable HAOS release is already published
+        required: false
+        type: boolean
+        default: false
   schedule:
-    # Monday at 03:41 UTC. Avoid the top of the hour, when scheduled runs are busier.
-    - cron: "41 3 * * 1"
+    # Daily at 03:41 UTC. Avoid the top of the hour, when scheduled runs are busier.
+    - cron: "41 3 * * *"
 
 permissions: {}
 
@@ -25,6 +31,7 @@ jobs:
       contents: write
     outputs:
       stable_ref: ${{ steps.stable.outputs.ref }}
+      should_build: ${{ steps.stable.outputs.should_build }}
     steps:
       - name: Merge upstream dev into this fork
         env:
@@ -46,12 +53,31 @@ jobs:
           test "$(jq -r '.prerelease' <<< "${release}")" = "false"
           stable_ref="$(jq -r '.tag_name' <<< "${release}")"
           test -n "${stable_ref}"
+
+          published_ref=""
+          if asset_url="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/weekly-latest" \
+            --jq '.assets[] | select(.name == "UPSTREAM_VERSION") | .browser_download_url' 2>/dev/null)" \
+            && [[ -n "${asset_url}" ]]; then
+            published_ref="$(curl --fail --silent --show-error --location "${asset_url}" | tr -d '\r\n')"
+          fi
+
+          force_rebuild='${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild }}'
+          if [[ "${force_rebuild}" == "true" || "${published_ref}" != "${stable_ref}" ]]; then
+            should_build=true
+          else
+            should_build=false
+          fi
+
           echo "ref=${stable_ref}" >> "$GITHUB_OUTPUT"
-          echo "Building upstream stable release ${stable_ref}"
+          echo "should_build=${should_build}" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream stable: ${stable_ref}"
+          echo "Already published upstream stable: ${published_ref:-none}"
+          echo "Build required: ${should_build}"
 
   prepare:
     name: Prepare the HAOS builder
     needs: sync
+    if: needs.sync.outputs.should_build == 'true'
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -114,6 +140,7 @@ jobs:
   build:
     name: Build and publish generic-x86-64
     needs: [sync, prepare]
+    if: needs.sync.outputs.should_build == 'true'
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -230,12 +257,14 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          STABLE_REF: ${{ needs.sync.outputs.stable_ref }}
         run: |
           set -euo pipefail
           mkdir release
           cp "output/images/haos_${BOARD}-${VERSION}.raucb" release/haos_generic-x86-64-amdgpu-cik.raucb
           cp "output/images/haos_${BOARD}-${VERSION}.img.xz" release/haos_generic-x86-64-amdgpu-cik.img.xz
           printf '%s\n' "${VERSION}" > release/VERSION
+          printf '%s\n' "${STABLE_REF}" > release/UPSTREAM_VERSION
           (cd release && sha256sum haos_generic-x86-64-amdgpu-cik.raucb haos_generic-x86-64-amdgpu-cik.img.xz > SHA256SUMS)
 
       - name: Upload short-lived workflow artifact
@@ -267,6 +296,51 @@ jobs:
               --latest
           fi
 
+      - name: Publish the custom stable manifest for the post-install updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          STABLE_REF: ${{ needs.sync.outputs.stable_ref }}
+        run: |
+          set -euo pipefail
+          official_manifest="$(curl --fail --silent --show-error --location https://version.home-assistant.io/stable.json)"
+          raucb_sha256="$(awk '$2 == "haos_generic-x86-64-amdgpu-cik.raucb" {print $1}' release/SHA256SUMS)"
+          image_sha256="$(awk '$2 == "haos_generic-x86-64-amdgpu-cik.img.xz" {print $1}' release/SHA256SUMS)"
+          test -n "${raucb_sha256}"
+          test -n "${image_sha256}"
+
+          manifest="$(jq \
+            --arg version "${VERSION}" \
+            --arg upstream "${STABLE_REF}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg raucb_sha256 "${raucb_sha256}" \
+            --arg image_sha256 "${image_sha256}" \
+            '.hassos["generic-x86-64"] = $version
+             | .ota = ("https://github.com/" + $repository + "/releases/latest/download/haos_generic-x86-64-amdgpu-cik.raucb")
+             | .custom_haos = {
+                 upstream_version: $upstream,
+                 version: $version,
+                 board: "generic-x86-64",
+                 raucb_sha256: $raucb_sha256,
+                 image_sha256: $image_sha256,
+                 release: ("https://github.com/" + $repository + "/releases/tag/weekly-latest")
+               }' <<< "${official_manifest}")"
+
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/docs/stable.json?ref=dev" --jq '.sha' 2>/dev/null || true)"
+          content="$(printf '%s\n' "${manifest}" | base64 -w 0)"
+          args=(
+            --method PUT
+            "repos/${GITHUB_REPOSITORY}/contents/docs/stable.json"
+            -f message="Publish OTA manifest for HAOS ${VERSION}"
+            -f content="${content}"
+            -f branch=dev
+          )
+          if [[ -n "${current_sha}" ]]; then
+            args+=( -f sha="${current_sha}" )
+          fi
+          gh api "${args[@]}" >/dev/null
+
       - name: Build summary
         shell: bash
         env:
@@ -278,3 +352,4 @@ jobs:
           echo "- Version: \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Kernel: \`CONFIG_DRM_AMDGPU_CIK=y\` verified in the generated .config" >> "$GITHUB_STEP_SUMMARY"
           echo "- RAUC: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/haos_generic-x86-64-amdgpu-cik.raucb" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Manifest: https://${{ github.repository_owner }}.github.io/haos-amdgpu-cik/stable.json" >> "$GITHUB_STEP_SUMMARY"
