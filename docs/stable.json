@@ -1,0 +1,9 @@
+{
+  "channel": "stable",
+  "hassos": {},
+  "ota": "https://github.com/gpillon/haos-amdgpu-cik/releases/latest/download/haos_generic-x86-64-amdgpu-cik.raucb",
+  "custom_haos": {
+    "status": "waiting-for-first-stable-build",
+    "board": "generic-x86-64"
+  }
+}
