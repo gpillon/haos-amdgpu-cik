@@ -1,0 +1,52 @@
+name: Validate HAOS CIK updater app
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - .github/workflows/validate-updater.yaml
+      - haos_cik_updater/**
+      - repository.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Python and version ordering
+        shell: bash
+        run: |
+          set -euo pipefail
+          script='haos_cik_updater/rootfs/opt/haos-cik-updater/updater.py'
+          python3 -m py_compile "${script}"
+          python3 - <<'PY'
+          import importlib.util
+
+          path = "haos_cik_updater/rootfs/opt/haos-cik-updater/updater.py"
+          spec = importlib.util.spec_from_file_location("updater", path)
+          updater = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(updater)
+          assert updater.version_key("18.3") < updater.version_key("18.3.cik20260920010000")
+          assert updater.version_key("18.3.cik20260920010000") < updater.version_key("18.4.cik20260921010000")
+          PY
+
+      - name: Build the app container
+        shell: bash
+        run: |
+          docker build \
+            --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.24-2026.08.0 \
+            --tag haos-cik-updater:test \
+            haos_cik_updater
+
+      - name: Verify required runtime tools
+        shell: bash
+        run: |
+          docker run --rm --entrypoint /bin/sh haos-cik-updater:test -c \
+            'command -v python3 && command -v gdbus && test -x /run.sh'
