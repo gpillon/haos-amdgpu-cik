@@ -101,12 +101,15 @@ jobs:
           submodules: true
           persist-credentials: false
 
-      - name: Verify the custom kernel fragment
+      - name: Reapply and verify the custom kernel fragment
         shell: bash
         run: |
           set -euo pipefail
-          grep -Fxq 'CONFIG_DRM_AMDGPU=m' buildroot-external/board/pc/generic-x86-64/kernel.config
-          grep -Fxq 'CONFIG_DRM_AMDGPU_CIK=y' buildroot-external/board/pc/generic-x86-64/kernel.config
+          fragment='buildroot-external/board/pc/generic-x86-64/kernel.config'
+          grep -Fxq 'CONFIG_DRM_AMDGPU=m' "${fragment}"
+          sed -i '/^CONFIG_DRM_AMDGPU_CIK=/d; /^# CONFIG_DRM_AMDGPU_CIK is not set$/d' "${fragment}"
+          sed -i '/^CONFIG_DRM_AMDGPU=m$/a CONFIG_DRM_AMDGPU_CIK=y' "${fragment}"
+          test "$(grep -Fxc 'CONFIG_DRM_AMDGPU_CIK=y' "${fragment}")" -eq 1
 
       - name: Set build version and stable Supervisor channel
         shell: bash
@@ -246,4 +249,3 @@ jobs:
           echo "- Version: \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Kernel: \`CONFIG_DRM_AMDGPU_CIK=y\` verified in the generated .config" >> "$GITHUB_STEP_SUMMARY"
           echo "- RAUC: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/haos_generic-x86-64-amdgpu-cik.raucb" >> "$GITHUB_STEP_SUMMARY"
-
