@@ -7,14 +7,26 @@ CONFIG_DRM_AMDGPU=m
 CONFIG_DRM_AMDGPU_CIK=y
 ```
 
-The `Weekly AMDGPU CIK build` workflow runs every Monday at 03:41 UTC and can
+The `Weekly AMDGPU CIK build` workflow checks every day at 03:41 UTC and can
 also be started manually. It keeps the fork's maintenance branch synchronized
-with upstream, resolves Home Assistant OS's latest non-prerelease release,
-checks out that stable tag directly from `home-assistant/operating-system`, and
-applies only `CONFIG_DRM_AMDGPU_CIK=y` in the runner workspace. It then builds
-only `generic-x86-64`, verifies the final Linux `.config`, signs the image with
-a persistent private RAUC identity, and updates the rolling `weekly-latest`
-GitHub release.
+with upstream and resolves Home Assistant OS's latest non-prerelease release.
+If that upstream stable release is already present in `weekly-latest`, the run
+stops without compiling. Otherwise it checks out the stable tag directly from
+`home-assistant/operating-system` and applies only
+`CONFIG_DRM_AMDGPU_CIK=y` in the runner workspace. It then builds only
+`generic-x86-64`, verifies the final Linux `.config`, signs the image with a
+persistent private RAUC identity, and updates the rolling release. A manual run
+can set `force_rebuild` when the same upstream version must be rebuilt.
+
+After a successful release the workflow publishes a Supervisor-compatible
+manifest at:
+
+- `https://gpillon.github.io/haos-amdgpu-cik/stable.json`
+
+The manifest is never advanced before the signed RAUC bundle and its checksums
+are available. The post-install updater consumes the `custom_haos` metadata and
+invokes the host RAUC service; the official Supervisor update endpoint remains
+unchanged.
 
 Stable download URLs:
 
