@@ -15,13 +15,16 @@ concurrency:
 env:
   BOARD: generic-x86-64
   DEFCONFIG: generic_x86_64
+  UPSTREAM_REPOSITORY: home-assistant/operating-system
 
 jobs:
   sync:
-    name: Sync the fork with Home Assistant OS
+    name: Sync the fork and resolve stable HAOS
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    outputs:
+      stable_ref: ${{ steps.stable.outputs.ref }}
     steps:
       - name: Merge upstream dev into this fork
         env:
@@ -31,6 +34,20 @@ jobs:
             --method POST \
             "repos/${GITHUB_REPOSITORY}/merge-upstream" \
             -f branch=dev
+
+      - name: Resolve the latest stable upstream release
+        id: stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest")"
+          test "$(jq -r '.draft' <<< "${release}")" = "false"
+          test "$(jq -r '.prerelease' <<< "${release}")" = "false"
+          stable_ref="$(jq -r '.tag_name' <<< "${release}")"
+          test -n "${stable_ref}"
+          echo "ref=${stable_ref}" >> "$GITHUB_OUTPUT"
+          echo "Building upstream stable release ${stable_ref}"
 
   prepare:
     name: Prepare the HAOS builder
@@ -43,19 +60,27 @@ jobs:
       builder_image: ${{ steps.builder.outputs.image }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Checkout the synchronized source
+      - name: Checkout the latest stable upstream source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: dev
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ needs.sync.outputs.stable_ref }}
           persist-credentials: false
 
       - name: Generate a unique HAOS version
         id: version
         shell: bash
+        env:
+          STABLE_REF: ${{ needs.sync.outputs.stable_ref }}
         run: |
           set -euo pipefail
           source buildroot-external/meta
-          suffix="dev$(date --utc +'%Y%m%d%H%M%S')"
+          source_version="${VERSION_MAJOR}.${VERSION_MINOR}"
+          if [[ -n "${VERSION_SUFFIX}" ]]; then
+            source_version="${source_version}.${VERSION_SUFFIX}"
+          fi
+          test "${source_version}" = "${STABLE_REF}"
+          suffix="cik$(date --utc +'%Y%m%d%H%M%S')"
           version="${VERSION_MAJOR}.${VERSION_MINOR}.${suffix}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
@@ -88,16 +113,17 @@ jobs:
 
   build:
     name: Build and publish generic-x86-64
-    needs: prepare
+    needs: [sync, prepare]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
       packages: read
     steps:
-      - name: Checkout the synchronized source and submodules
+      - name: Checkout the latest stable upstream source and submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: dev
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ needs.sync.outputs.stable_ref }}
           submodules: true
           persist-credentials: false
 
@@ -224,16 +250,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          STABLE_REF: ${{ needs.sync.outputs.stable_ref }}
         run: |
           set -euo pipefail
           title="HAOS ${VERSION} with AMDGPU CIK"
-          notes="Automated generic-x86-64 build from Home Assistant OS dev with CONFIG_DRM_AMDGPU_CIK=y. Internal HAOS version: ${VERSION}."
-          if gh release view weekly-latest >/dev/null 2>&1; then
-            gh release upload weekly-latest release/* --clobber
-            gh release edit weekly-latest --title "${title}" --notes "${notes}" --latest
+          notes="Automated generic-x86-64 build from stable Home Assistant OS ${STABLE_REF} with CONFIG_DRM_AMDGPU_CIK=y. Internal HAOS version: ${VERSION}."
+          if gh release view weekly-latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload weekly-latest release/* --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release edit weekly-latest --title "${title}" --notes "${notes}" --latest --repo "${GITHUB_REPOSITORY}"
           else
             gh release create weekly-latest release/* \
-              --target "$(git rev-parse HEAD)" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
               --title "${title}" \
               --notes "${notes}" \
               --latest
@@ -243,8 +271,10 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          STABLE_REF: ${{ needs.sync.outputs.stable_ref }}
         run: |
           echo "### HAOS AMDGPU CIK build" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Upstream stable release: \`${STABLE_REF}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Version: \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Kernel: \`CONFIG_DRM_AMDGPU_CIK=y\` verified in the generated .config" >> "$GITHUB_STEP_SUMMARY"
           echo "- RAUC: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/haos_generic-x86-64-amdgpu-cik.raucb" >> "$GITHUB_STEP_SUMMARY"
