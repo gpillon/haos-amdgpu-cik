@@ -1,4 +1,4 @@
-name: Weekly AMDGPU CIK build
+name: Daily stable AMDGPU CIK build
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: weekly-amdgpu-cik
+  group: daily-stable-amdgpu-cik
   cancel-in-progress: false
 
 env:
