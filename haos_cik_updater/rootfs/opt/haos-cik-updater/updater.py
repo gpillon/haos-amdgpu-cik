@@ -26,7 +26,7 @@ BUNDLE_PATH = CONTAINER_SHARE_DIR / "haos-amdgpu-cik-update.raucb"
 RAUC_SERVICE = "de.pengutronix.rauc"
 RAUC_OBJECT = "/"
 RAUC_INTERFACE = "de.pengutronix.rauc.Installer"
-VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d{14}))?$")
+VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(?:cik)?(\d{14}))?$")
 
 
 def load_options() -> dict[str, Any]:
