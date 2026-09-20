@@ -26,6 +26,31 @@ class Response(io.BytesIO):
 
 
 class UpdaterTests(unittest.TestCase):
+    def test_check_uses_booted_rauc_slot_when_supervisor_token_is_missing(self) -> None:
+        slot_status = """([('rootfs.0', {'class': <'rootfs'>, 'state': <'booted'>,
+            'bundle.version': <'18.3.20260920013543'>}),
+            ('rootfs.1', {'class': <'rootfs'>, 'state': <'inactive'>,
+            'bundle.version': <'18.2'>})],)"""
+        manifest = {
+            "hassos": {"generic-x86-64": "18.3.20260920013543"},
+            "ota": "https://example.invalid/update.raucb",
+            "custom_haos": {
+                "board": "generic-x86-64",
+                "version": "18.3.20260920013543",
+                "raucb_sha256": "0" * 64,
+            },
+        }
+        state = updater.State()
+        with (
+            mock.patch.dict(updater.os.environ, {}, clear=True),
+            mock.patch.object(updater, "gdbus_call", return_value=slot_status),
+            mock.patch.object(updater, "fetch_manifest", return_value=manifest),
+        ):
+            state.check()
+
+        self.assertEqual(state.current_version, "18.3.20260920013543")
+        self.assertEqual(state.message, "Sistema aggiornato")
+
     def test_reads_installed_version_from_supervisor_api(self) -> None:
         response = Response(
             json.dumps({"result": "ok", "data": {"version": "18.3.20260920013543"}}).encode()

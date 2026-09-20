@@ -14,3 +14,6 @@ Automatic installation and automatic reboot are disabled by default. Open the
 app from its ingress panel, review the installed and available versions, and
 select **Installa aggiornamento**. Unless `reboot_after_install` is enabled,
 reboot Home Assistant from the normal UI after RAUC finishes.
+
+The installed version is read from the booted RAUC slot. The Supervisor API is
+used when its token is available, but it is not required for update checks.

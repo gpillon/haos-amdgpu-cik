@@ -76,6 +76,43 @@ def supervisor_os_version() -> str:
     return version
 
 
+def _gvariant_string(properties: str, key: str) -> str | None:
+    match = re.search(
+        rf"['\"]{re.escape(key)}['\"]\s*:\s*<\s*(['\"])(.*?)\1\s*>",
+        properties,
+        flags=re.DOTALL,
+    )
+    return match.group(2) if match else None
+
+
+def rauc_booted_version() -> str:
+    """Read the installed version from the booted RAUC slot."""
+    output = gdbus_call(f"{RAUC_INTERFACE}.GetSlotStatus", timeout=30)
+    for match in re.finditer(
+        r"\(\s*['\"][^'\"]+['\"]\s*,\s*\{(?P<properties>.*?)\}\s*\)",
+        output,
+        flags=re.DOTALL,
+    ):
+        properties = match.group("properties")
+        if _gvariant_string(properties, "state") != "booted":
+            continue
+        version = _gvariant_string(properties, "bundle.version")
+        if version is not None:
+            version_key(version)
+            return version
+    raise RuntimeError("RAUC non riporta la versione dello slot avviato")
+
+
+def installed_os_version() -> str:
+    """Use Supervisor when available and RAUC as the token-free source."""
+    if os.environ.get("SUPERVISOR_TOKEN") or os.environ.get("HASSIO_TOKEN"):
+        try:
+            return supervisor_os_version()
+        except Exception:
+            pass
+    return rauc_booted_version()
+
+
 def rauc_property(name: str) -> str:
     output = gdbus_call(
         "org.freedesktop.DBus.Properties.Get",
@@ -178,7 +215,7 @@ class State:
     def check(self) -> None:
         options = load_options()
         try:
-            current = supervisor_os_version()
+            current = installed_os_version()
             manifest = fetch_manifest(str(options["manifest_url"]))
             target = manifest["custom_haos"]["version"]
             available = version_key(target) > version_key(current)
