@@ -49,11 +49,18 @@ def version_key(value: str) -> tuple[int, int, int, int]:
     return int(major), int(minor), 1 if timestamp else 0, int(timestamp or 0)
 
 
+def supervisor_token() -> str:
+    token = os.environ.get("SUPERVISOR_TOKEN") or os.environ.get("HASSIO_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "Token Supervisor non disponibile. Reinstalla o riavvia l'add-on dopo l'aggiornamento"
+        )
+    return token
+
+
 def supervisor_os_version() -> str:
     """Read the installed HAOS version from the supported Supervisor API."""
-    token = os.environ.get("SUPERVISOR_TOKEN")
-    if not token:
-        raise RuntimeError("Token Supervisor non disponibile")
+    token = supervisor_token()
     request = urllib.request.Request(
         "http://supervisor/os/info",
         headers={"Authorization": f"Bearer {token}"},
@@ -243,9 +250,7 @@ class State:
 
     @staticmethod
     def _reboot_host() -> None:
-        token = os.environ.get("SUPERVISOR_TOKEN")
-        if not token:
-            raise RuntimeError("SUPERVISOR_TOKEN is unavailable; reboot manually")
+        token = supervisor_token()
         request = urllib.request.Request(
             "http://supervisor/host/reboot",
             data=b"{}",
