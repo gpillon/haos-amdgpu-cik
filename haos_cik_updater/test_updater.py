@@ -28,7 +28,7 @@ class Response(io.BytesIO):
 class UpdaterTests(unittest.TestCase):
     def test_check_uses_booted_rauc_slot_when_supervisor_token_is_missing(self) -> None:
         slot_status = """([('rootfs.0', {'class': <'rootfs'>, 'state': <'booted'>,
-            'bundle.version': <'18.3.cik20260919223553'>}),
+            'bundle.version': <'18.3.20260920013543'>}),
             ('rootfs.1', {'class': <'rootfs'>, 'state': <'inactive'>,
             'bundle.version': <'18.2'>})],)"""
         manifest = {
@@ -48,8 +48,8 @@ class UpdaterTests(unittest.TestCase):
         ):
             state.check()
 
-        self.assertEqual(state.current_version, "18.3.cik20260919223553")
-        self.assertEqual(state.message, "Aggiornamento 18.3.20260920013543 disponibile")
+        self.assertEqual(state.current_version, "18.3.20260920013543")
+        self.assertEqual(state.message, "Sistema aggiornato")
 
     def test_reads_installed_version_from_supervisor_api(self) -> None:
         response = Response(

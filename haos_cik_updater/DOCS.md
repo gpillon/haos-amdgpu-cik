@@ -17,5 +17,3 @@ reboot Home Assistant from the normal UI after RAUC finishes.
 
 The installed version is read from the booted RAUC slot. The Supervisor API is
 used when its token is available, but it is not required for update checks.
-Legacy versions using the `18.3.cik<timestamp>` format are accepted for the
-one-time update to the current numeric version format.
