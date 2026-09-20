@@ -38,7 +38,7 @@
     "odroid-m1": "18.3",
     "odroid-m1s": "18.3",
     "odroid-n2": "18.3",
-    "generic-x86-64": "18.3.cik20260919223553",
+    "generic-x86-64": "18.3.20260920013543",
     "generic-aarch64": "18.3",
     "khadas-vim3": "18.3"
   },
@@ -74,10 +74,10 @@
   },
   "custom_haos": {
     "upstream_version": "18.3",
-    "version": "18.3.cik20260919223553",
+    "version": "18.3.20260920013543",
     "board": "generic-x86-64",
-    "raucb_sha256": "a4c57e719aa7642fe93c2fc3e185e4f7650252d72e4e682848e496f55f0aed59",
-    "image_sha256": "893c32a53d074a8d7fc6cfb356b303ac0dcd00481fc2bb0910af07f7faf47110",
+    "raucb_sha256": "9487663d6fc212405cefae23ca30e431a3d398d8d7b9a3e78db36ab310377207",
+    "image_sha256": "7267b8e67f61bf83f48c5d9921fe19a076e69d1abf7754027283602788360f75",
     "release": "https://github.com/gpillon/haos-amdgpu-cik/releases/tag/weekly-latest"
   }
 }
