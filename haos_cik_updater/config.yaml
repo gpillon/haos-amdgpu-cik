@@ -1,5 +1,5 @@
 name: HAOS AMDGPU CIK Updater
-version: 0.1.1
+version: 0.2.0
 slug: haos_cik_updater
 description: Check and install gpillon's signed HAOS AMDGPU CIK updates
 url: https://github.com/gpillon/haos-amdgpu-cik
@@ -13,6 +13,8 @@ host_dbus: true
 ingress: true
 ingress_port: 8099
 init: false
+map:
+  - share:rw
 options:
   manifest_url: https://gpillon.github.io/haos-amdgpu-cik/stable.json
   auto_install: false

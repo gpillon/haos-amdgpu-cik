@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,9 @@ from typing import Any
 
 
 OPTIONS_PATH = Path("/data/options.json")
+CONTAINER_SHARE_DIR = Path("/share")
+HOST_SHARE_DIR = Path("/mnt/data/supervisor/share")
+BUNDLE_PATH = CONTAINER_SHARE_DIR / "haos-amdgpu-cik-update.raucb"
 RAUC_SERVICE = "de.pengutronix.rauc"
 RAUC_OBJECT = "/"
 RAUC_INTERFACE = "de.pengutronix.rauc.Installer"
@@ -45,7 +49,41 @@ def version_key(value: str) -> tuple[int, int, int, int]:
     return int(major), int(minor), 1 if timestamp else 0, int(timestamp or 0)
 
 
+def supervisor_os_version() -> str:
+    """Read the installed HAOS version from the supported Supervisor API."""
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        raise RuntimeError("Token Supervisor non disponibile")
+    request = urllib.request.Request(
+        "http://supervisor/os/info",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        payload = json.load(response)
+    if payload.get("result") != "ok":
+        raise RuntimeError(f"Risposta Supervisor non valida: {payload.get('message', 'errore sconosciuto')}")
+    version = payload.get("data", {}).get("version")
+    if not isinstance(version, str):
+        raise RuntimeError("La risposta Supervisor non contiene la versione HAOS")
+    version_key(version)
+    return version
+
+
 def rauc_property(name: str) -> str:
+    output = gdbus_call(
+        "org.freedesktop.DBus.Properties.Get",
+        RAUC_INTERFACE,
+        name,
+        timeout=15,
+    )
+    match = re.search(r"<[\"']([^\"']*)[\"']>", output)
+    if not match:
+        raise RuntimeError(f"Risposta RAUC inattesa per {name}: {output.strip()}")
+    return match.group(1)
+
+
+def gdbus_call(method: str, *arguments: str, timeout: int) -> str:
+    """Call host RAUC over D-Bus and surface its useful error text."""
     completed = subprocess.run(
         [
             "gdbus",
@@ -56,23 +94,22 @@ def rauc_property(name: str) -> str:
             "--object-path",
             RAUC_OBJECT,
             "--method",
-            "org.freedesktop.DBus.Properties.Get",
-            RAUC_INTERFACE,
-            name,
+            method,
+            *arguments,
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=timeout,
     )
-    match = re.search(r"<[\"']([^\"']*)[\"']>", completed.stdout)
-    if not match:
-        raise RuntimeError(f"Unexpected D-Bus response for {name}: {completed.stdout.strip()}")
-    return match.group(1)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "errore sconosciuto"
+        raise RuntimeError(f"RAUC D-Bus: {detail}")
+    return completed.stdout
 
 
 def fetch_manifest(url: str) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers={"User-Agent": "haos-cik-updater/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "haos-cik-updater/0.2"})
     with urllib.request.urlopen(request, timeout=20) as response:
         data = json.load(response)
 
@@ -90,6 +127,37 @@ def fetch_manifest(url: str) -> dict[str, Any]:
     return data
 
 
+def download_bundle(url: str, expected_sha256: str, destination: Path = BUNDLE_PATH) -> Path:
+    """Download and verify a bundle outside RAUC's limited HTTP downloader."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(f"{destination.suffix}.part")
+    temporary.unlink(missing_ok=True)
+    digest = hashlib.sha256()
+    request = urllib.request.Request(url, headers={"User-Agent": "haos-cik-updater/0.2"})
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response, temporary.open("wb") as output:
+            while chunk := response.read(1024 * 1024):
+                output.write(chunk)
+                digest.update(chunk)
+        actual_sha256 = digest.hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise ValueError(
+                f"Bundle checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
+            )
+        os.replace(temporary, destination)
+        return destination
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def host_bundle_path(container_path: Path) -> Path:
+    """Translate the add-on /share mount to the same file in the HAOS host namespace."""
+    if container_path.parent != CONTAINER_SHARE_DIR:
+        raise ValueError(f"Bundle must be stored directly in {CONTAINER_SHARE_DIR}")
+    return HOST_SHARE_DIR / container_path.name
+
+
 class State:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -97,17 +165,17 @@ class State:
         self.manifest: dict[str, Any] | None = None
         self.update_available = False
         self.installing = False
-        self.message = "Waiting for the first update check"
+        self.message = "In attesa del primo controllo"
         self.last_check = 0.0
 
     def check(self) -> None:
         options = load_options()
         try:
-            current = rauc_property("SystemVersion")
+            current = supervisor_os_version()
             manifest = fetch_manifest(str(options["manifest_url"]))
             target = manifest["custom_haos"]["version"]
             available = version_key(target) > version_key(current)
-            message = f"Update {target} is available" if available else "System is up to date"
+            message = f"Aggiornamento {target} disponibile" if available else "Sistema aggiornato"
             with self.lock:
                 self.current_version = current
                 self.manifest = manifest
@@ -118,7 +186,7 @@ class State:
                 self.install()
         except Exception as err:  # Keep the service/UI alive and expose the failure.
             with self.lock:
-                self.message = f"Update check failed: {err}"
+                self.message = f"Controllo non riuscito: {err}"
                 self.last_check = time.time()
 
     def install(self) -> None:
@@ -128,29 +196,22 @@ class State:
             if not self.update_available or self.manifest is None:
                 raise RuntimeError("No newer compatible update is available")
             url = self.manifest["ota"]
+            checksum = self.manifest["custom_haos"]["raucb_sha256"]
             self.installing = True
-            self.message = "RAUC installation requested"
-        threading.Thread(target=self._install_worker, args=(url,), daemon=True).start()
+            self.message = "Download e verifica del bundle firmato"
+        threading.Thread(target=self._install_worker, args=(url, checksum), daemon=True).start()
 
-    def _install_worker(self, url: str) -> None:
+    def _install_worker(self, url: str, expected_sha256: str) -> None:
+        bundle_path: Path | None = None
         try:
-            subprocess.run(
-                [
-                    "gdbus",
-                    "call",
-                    "--system",
-                    "--dest",
-                    RAUC_SERVICE,
-                    "--object-path",
-                    RAUC_OBJECT,
-                    "--method",
-                    f"{RAUC_INTERFACE}.InstallBundle",
-                    url,
-                    "{}",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
+            bundle_path = download_bundle(url, expected_sha256)
+            host_path = host_bundle_path(bundle_path)
+            with self.lock:
+                self.message = "Installazione nello slot inattivo"
+            gdbus_call(
+                f"{RAUC_INTERFACE}.InstallBundle",
+                str(host_path),
+                "{}",
                 timeout=30,
             )
             saw_installing = False
@@ -164,7 +225,7 @@ class State:
                     if error:
                         raise RuntimeError(error)
                     with self.lock:
-                        self.message = "Update installed in the inactive slot; reboot to activate it"
+                        self.message = "Aggiornamento installato. Riavvia per attivarlo"
                         self.update_available = False
                     if bool(load_options()["reboot_after_install"]):
                         self._reboot_host()
@@ -173,8 +234,10 @@ class State:
             raise TimeoutError("Timed out waiting for RAUC to complete")
         except Exception as err:
             with self.lock:
-                self.message = f"Installation failed: {err}"
+                self.message = f"Installazione non riuscita: {err}"
         finally:
+            if bundle_path is not None:
+                bundle_path.unlink(missing_ok=True)
             with self.lock:
                 self.installing = False
 
@@ -214,19 +277,83 @@ class Handler(BaseHTTPRequestHandler):
             message = STATE.message
             available = STATE.update_available
             installing = STATE.installing
-        button = ""
+        if installing:
+            tone = "working"
+            status_title = "Aggiornamento in corso"
+        elif message.startswith(("Controllo non riuscito", "Installazione non riuscita")):
+            tone = "error"
+            status_title = "Intervento necessario"
+        elif available:
+            tone = "ready"
+            status_title = "Aggiornamento pronto"
+        elif current == "unknown":
+            tone = "working"
+            status_title = "Controllo del sistema"
+        else:
+            tone = "ok"
+            status_title = "Sistema aggiornato"
+        install_button = ""
         if available and not installing:
-            button = '<form method="post" action="install"><button type="submit">Install signed update</button></form>'
+            install_button = (
+                '<form method="post" action="install">'
+                '<button class="primary" type="submit">Installa aggiornamento</button></form>'
+            )
+        refresh = '<meta http-equiv="refresh" content="5">' if installing else ""
         page = f"""<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>HAOS CIK Updater</title></head><body>
-<h1>HAOS AMDGPU CIK Updater</h1>
-<p><strong>Installed:</strong> {html.escape(current)}</p>
-<p><strong>Available:</strong> {html.escape(str(target))}</p>
-<p>{html.escape(message)}</p>
-{button}
-<form method="post" action="check"><button type="submit">Check now</button></form>
-</body></html>"""
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+{refresh}<title>HAOS CIK Updater</title>
+<style>
+:root {{ color-scheme: light dark; --navy:#0b1f2a; --blue:#18a4e0; --paper:#f4f8fa;
+  --ink:#17313d; --muted:#607985; --line:#d5e2e8; --ok:#16865c; --ready:#b66a12;
+  --error:#b42318; --white:#fff; }}
+* {{ box-sizing:border-box; }}
+body {{ margin:0; min-height:100vh; background:var(--paper); color:var(--ink);
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }}
+main {{ width:min(760px,calc(100% - 32px)); margin:0 auto; padding:40px 0 56px; }}
+header {{ display:flex; align-items:center; gap:16px; margin-bottom:30px; }}
+.mark {{ width:52px; height:52px; display:grid; place-items:center; border-radius:12px;
+  background:var(--navy); color:var(--white); font-weight:800; letter-spacing:-.04em; }}
+h1 {{ margin:0; font-size:clamp(1.65rem,4vw,2.35rem); letter-spacing:-.035em; line-height:1.05; }}
+.subtitle {{ margin:6px 0 0; color:var(--muted); font-size:.98rem; }}
+.status {{ border-left:5px solid var(--blue); background:var(--white); padding:22px 24px;
+  box-shadow:0 12px 34px rgba(18,54,70,.08); }}
+.status.ok {{ border-color:var(--ok); }} .status.ready {{ border-color:var(--ready); }}
+.status.error {{ border-color:var(--error); }}
+.status-line {{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }}
+.dot {{ width:10px; height:10px; border-radius:50%; background:var(--blue); flex:none; }}
+.ok .dot {{ background:var(--ok); }} .ready .dot {{ background:var(--ready); }}
+.error .dot {{ background:var(--error); }}
+h2 {{ margin:0; font-size:1.12rem; letter-spacing:-.015em; }}
+.message {{ margin:0; color:var(--muted); line-height:1.55; overflow-wrap:anywhere; }}
+.versions {{ display:grid; grid-template-columns:1fr 1fr; gap:1px; margin:26px 0;
+  background:var(--line); border:1px solid var(--line); }}
+.version {{ background:var(--white); padding:20px 22px; }}
+.version span {{ display:block; color:var(--muted); font-size:.84rem; margin-bottom:8px; }}
+.version strong {{ font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+  font-size:clamp(.9rem,3vw,1.08rem); overflow-wrap:anywhere; }}
+.actions {{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; }}
+form {{ margin:0; }} button {{ appearance:none; border:1px solid var(--navy); border-radius:8px;
+  padding:11px 16px; font:inherit; font-weight:700; cursor:pointer; background:transparent; color:var(--navy); }}
+button.primary {{ background:var(--blue); border-color:var(--blue); color:#05202c; }}
+button:focus-visible {{ outline:3px solid rgba(24,164,224,.35); outline-offset:3px; }}
+.trust {{ margin:24px 0 0; color:var(--muted); font-size:.85rem; line-height:1.5; }}
+@media (max-width:560px) {{ main {{ padding-top:24px; }} .versions {{ grid-template-columns:1fr; }}
+  .actions, .actions form, button {{ width:100%; }} }}
+@media (prefers-color-scheme:dark) {{ :root {{ --paper:#07151c; --ink:#e6f2f6; --muted:#99b0ba;
+  --line:#29434e; --white:#102630; --navy:#dcecf2; }} .mark {{ background:var(--blue); color:#05202c; }}
+  button {{ color:var(--ink); border-color:var(--muted); }} }}
+</style></head><body><main>
+<header><div class="mark">CIK</div><div><h1>Aggiornamenti HAOS CIK</h1>
+<p class="subtitle">Bundle firmati per generic-x86-64</p></div></header>
+<section class="status {tone}" aria-live="polite"><div class="status-line"><span class="dot"></span>
+<h2>{html.escape(status_title)}</h2></div><p class="message">{html.escape(message)}</p></section>
+<section class="versions"><div class="version"><span>Versione installata</span>
+<strong>{html.escape(current)}</strong></div><div class="version"><span>Versione disponibile</span>
+<strong>{html.escape(str(target))}</strong></div></section>
+<div class="actions">{install_button}<form method="post" action="check">
+<button type="submit">Controlla ora</button></form></div>
+<p class="trust">Il bundle viene scaricato nella cartella condivisa, verificato con SHA-256 e installato nello slot inattivo.</p>
+</main></body></html>"""
         encoded = page.encode()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")

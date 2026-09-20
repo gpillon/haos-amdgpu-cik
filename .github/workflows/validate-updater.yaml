@@ -26,6 +26,7 @@ jobs:
           set -euo pipefail
           script='haos_cik_updater/rootfs/opt/haos-cik-updater/updater.py'
           python3 -m py_compile "${script}"
+          python3 -m unittest haos_cik_updater/test_updater.py -v
           python3 - <<'PY'
           import importlib.util
 
