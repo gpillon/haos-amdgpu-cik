@@ -33,8 +33,14 @@ jobs:
           spec = importlib.util.spec_from_file_location("updater", path)
           updater = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(updater)
-          assert updater.version_key("18.3") < updater.version_key("18.3.cik20260920010000")
-          assert updater.version_key("18.3.cik20260920010000") < updater.version_key("18.4.cik20260921010000")
+          assert updater.version_key("18.3") < updater.version_key("18.3.20260920010000")
+          assert updater.version_key("18.3.20260920010000") < updater.version_key("18.4.20260921010000")
+          try:
+              updater.version_key("18.3.cik20260920010000")
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("Supervisor-incompatible HAOS version was accepted")
           PY
 
       - name: Build the app container
