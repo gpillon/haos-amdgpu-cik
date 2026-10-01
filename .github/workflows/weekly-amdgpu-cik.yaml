@@ -35,12 +35,22 @@ jobs:
     steps:
       - name: Merge upstream dev into this fork
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+          HAS_FORK_SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN != '' }}
         run: |
-          gh api \
+          set -euo pipefail
+          if sync_result="$(gh api \
             --method POST \
             "repos/${GITHUB_REPOSITORY}/merge-upstream" \
-            -f branch=dev
+            -f branch=dev 2>&1)"; then
+            printf '%s\n' "${sync_result}"
+          elif [[ "${HAS_FORK_SYNC_TOKEN}" != "true" ]] && \
+            grep -Fq 'without `workflows` permission' <<< "${sync_result}"; then
+            echo "::warning::Fork sync could not update upstream workflow files with GITHUB_TOKEN. Set FORK_SYNC_TOKEN with Contents and Workflows write permissions to keep dev synchronized. Continuing with the upstream stable tag."
+          else
+            printf '%s\n' "${sync_result}" >&2
+            exit 1
+          fi
 
       - name: Resolve the latest stable upstream release
         id: stable
