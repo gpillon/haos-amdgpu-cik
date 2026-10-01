@@ -10,6 +10,12 @@ CONFIG_DRM_AMDGPU_CIK=y
 The `Daily stable AMDGPU CIK build` workflow checks every day at 03:41 UTC and can
 also be started manually. It keeps the fork's maintenance branch synchronized
 with upstream and resolves Home Assistant OS's latest non-prerelease release.
+If upstream changes its workflow files, the default `GITHUB_TOKEN` cannot sync
+those changes. In that case the workflow warns and continues building from the
+upstream stable tag, while the fork's `dev` branch remains behind. To keep the
+fork synchronized automatically, set the `FORK_SYNC_TOKEN` Actions secret to a
+fine-grained token scoped to this repository with Contents and Workflows write
+permissions. Other sync failures still stop the run.
 If that upstream stable release is already present in `weekly-latest`, the run
 stops without compiling. Otherwise it checks out the stable tag directly from
 `home-assistant/operating-system` and applies only
