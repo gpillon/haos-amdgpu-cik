@@ -19,7 +19,12 @@ permissions. Other sync failures still stop the run.
 If that upstream stable release is already present in `weekly-latest`, the run
 stops without compiling. Otherwise it checks out the stable tag directly from
 `home-assistant/operating-system` and applies only
-`CONFIG_DRM_AMDGPU_CIK=y` in the runner workspace. It then builds only
+`CONFIG_DRM_AMDGPU_CIK=y` in the runner workspace, plus removing the Hailo-8
+firmware and `hailo_pci` driver (`BR2_PACKAGE_HAILO8_FIRMWARE`,
+`BR2_PACKAGE_HAILO_PCI`). Since 18.4, upstream builds without EROFS
+deduplication and the root filesystem no longer fits the 256 MiB system slot
+once the CIK code is added, so Hailo-8 accelerators are not supported by this
+image. It then builds only
 `generic-x86-64`, verifies the final Linux `.config`, signs the image with a
 persistent private RAUC identity, and updates the rolling release. A manual run
 can set `force_rebuild` when the same upstream version must be rebuilt.
@@ -70,6 +75,9 @@ initial image and retain a recoverable backup before relying on it.
 ## Maintenance
 
 The kernel configuration is not committed to the fork. Each run starts from the
-latest stable upstream tag and reapplies only the CIK setting. If upstream
-removes or renames the AMDGPU configuration anchor, the workflow stops before
-building instead of changing unrelated kernel options.
+latest stable upstream tag and reapplies only the CIK setting and the Hailo
+removal. If upstream removes or renames the AMDGPU configuration anchor or the
+Hailo defconfig options, the workflow stops before building instead of
+changing unrelated options. Once upstream re-enables EROFS deduplication
+(erofs-utils issue #57) or frees space otherwise, the Hailo removal can be
+dropped.
