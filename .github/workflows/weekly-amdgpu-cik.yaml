@@ -175,6 +175,19 @@ jobs:
           sed -i '/^CONFIG_DRM_AMDGPU=m$/a CONFIG_DRM_AMDGPU_CIK=y' "${fragment}"
           test "$(grep -Fxc 'CONFIG_DRM_AMDGPU_CIK=y' "${fragment}")" -eq 1
 
+      # Upstream 18.4 disabled EROFS dedupe and the rootfs now fills the
+      # 256 MiB system slot; the CIK code alone pushes it over the limit.
+      - name: Trim rootfs to fit the 256 MiB system slot
+        shell: bash
+        run: |
+          set -euo pipefail
+          defconfig='buildroot-external/configs/generic_x86_64_defconfig'
+          for opt in BR2_PACKAGE_HAILO8_FIRMWARE BR2_PACKAGE_HAILO_PCI; do
+            grep -Fxq "${opt}=y" "${defconfig}"
+            sed -i "s/^${opt}=y$/# ${opt} is not set/" "${defconfig}"
+            grep -Fxq "# ${opt} is not set" "${defconfig}"
+          done
+
       - name: Set build version and stable Supervisor channel
         shell: bash
         env:
